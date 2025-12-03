@@ -64,7 +64,8 @@ int main(){
 	timer.start();
 	
 	while(true){
-		int start_t = timer.read_us();
+		// FIXED: Use chrono-based timing (removes deprecation warning)
+		auto start_t = timer.elapsed_time();
 		
 		// 1. read sensor data ONCE
 		float x, y, z;
@@ -120,8 +121,12 @@ int main(){
             printf(">tremor_freq:%.2f\n", tremorDetector.dominant_freq);
             printf(">tremor_power:%.3f\n", tremorDetector.tremor_power);
             printf(">dysk_power:%.3f\n", tremorDetector.dyskinesia_power);
-	}
+        }  // FIXED: Added missing closing brace for if statement
 	
-	// 5. Maintain 52Hz timing
-	while((timer.read_us() - start_t) < PERIOD_US);
-}
+        // 5. Maintain 52Hz timing
+        // FIXED: Use chrono-based timing (removes deprecation warning)
+        while((timer.elapsed_time() - start_t).count() < PERIOD_US);
+    }  // FIXED: Added missing closing brace for while(true)
+}  // Closing brace for main()
+
+
