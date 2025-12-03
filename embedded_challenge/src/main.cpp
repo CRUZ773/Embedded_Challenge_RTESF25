@@ -1,4 +1,4 @@
-// combines FOG detection + Tremor/Dyskinesia detection
+// Integrated FOG detection + Tremor/Dyskinesia detection
 // both services run simultaneously on the same sensor data
 
 #include "mbed.h"
