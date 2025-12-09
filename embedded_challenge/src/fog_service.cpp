@@ -75,11 +75,12 @@ bool FOG_Service::update(float x, float y, float z)
     {
         float freq = i * 0.406f;
 
-        // KEEP: 0.5f start frequency
-        // This ensures slow/smooth walking is captured.
-        if (freq >= 0.5f && freq <= 3.0f)
+        // Changed boundary from 3.0 to 5.0Hz
+        // Locomotion: 0.5-5.0Hz (normal walking + tremor/dysk ranges)
+        // FOG Detection: 5.0-8.0Hz
+        if (freq >= 0.5f && freq <= 5.0f)
             loco_energy += fftMag[i];
-        if (freq > 3.0f && freq <= 8.0f)
+        if (freq > 5.0f && freq <= 8.0f)
             freeze_energy += fftMag[i];
     }
 
