@@ -1,7 +1,9 @@
 {
     "target_overrides": {
         "*": {
-            "target.printf_lib": "std"
+            "target.printf_lib": "std",
+            "platform.stdio-convert-newlines": true,
+            "platform.printf-enable-floating-point": true
         }
     }
 }

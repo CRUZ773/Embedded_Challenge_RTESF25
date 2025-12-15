@@ -227,7 +227,9 @@ void readAccel(float &x, float &y, float &z){
 // Update BLE Characteristics
 void updateFOGCharacteristic(bool detected, float index, float freq){
 	char buffer[MAX_VALUE_LEN];
-	snprintf(buffer, MAX_VALUE_LEN, "FOG:%d,%.2f,%.2f", detected ? 1 : 0, index, freq);
+	int index_i = (int)(index * 100);   // 2 decimal places
+    int freq_i  = (int)(freq  * 100);   // 2 decimal places
+	snprintf(buffer, MAX_VALUE_LEN, "FOG:%d,%d,%d", detected ? 1 : 0, index_i, freq_i);
 	memcpy(fogValue, buffer, strlen(buffer) + 1);
 	ble_interface.gattServer().write(
 		fogCharacteristic.getValueHandle(),
@@ -238,7 +240,9 @@ void updateFOGCharacteristic(bool detected, float index, float freq){
 
 void updateTremorCharacteristic(bool detected, float freq, float power){
 	char buffer[MAX_VALUE_LEN];
-	snprintf(buffer, MAX_VALUE_LEN, "TREMOR:%d,%.2f,%.3f", detected ? 1 : 0, freq, power);
+	int freq_i  = (int)(freq  * 100);
+    int power_i = (int)(power * 1000);
+	snprintf(buffer, MAX_VALUE_LEN, "TREMOR:%d,%d,%d", detected ? 1 : 0, freq_i, power_i);
 	memcpy(tremorValue, buffer, strlen(buffer) + 1);
 	ble_interface.gattServer().write(
 		tremorCharacteristic.getValueHandle(),
@@ -249,7 +253,9 @@ void updateTremorCharacteristic(bool detected, float freq, float power){
 
 void updateDyskCharacteristic(bool detected, float freq, float power){
 	char buffer[MAX_VALUE_LEN];
-	snprintf(buffer, MAX_VALUE_LEN, "DYSK:%d,%.2f,%.3f", detected ? 1 : 0, freq, power);
+	int freq_i  = (int)(freq  * 100);
+    int power_i = (int)(power * 1000);
+	snprintf(buffer, MAX_VALUE_LEN, "DYSK:%d,%d,%d", detected ? 1 : 0, freq_i, power_i);
 	memcpy(dyskValue, buffer, strlen(buffer) + 1);
 	ble_interface.gattServer().write(
 		dyskCharacteristic.getValueHandle(),
@@ -393,7 +399,7 @@ void on_ble_init_complete(BLE::InitializationCompleteCallbackContext *params){
 	uint8_t adv_buffer[LEGACY_ADVERTISING_MAX_SIZE];
 	AdvertisingDataBuilder adv_data(adv_buffer);
 	adv_data.setFlags();
-	adv_data.setName("PD-Monitor");
+	adv_data.setName("Parkinson's device");
 	
 	ble_interface.gap().setAdvertisingParameters(
 		LEGACY_ADVERTISING_HANDLE,
