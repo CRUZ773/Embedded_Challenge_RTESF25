@@ -1,105 +1,106 @@
 /*
-  Parkinson's Disease Monitor
-  - Tremor Detection
-  - Dyskinesia Detection
-  - Freezing of Gait (FOG) Detection
-  - BLE Communication (String Characteristics)
+  Parkinson's Disease Monitor - Group Project
+  - Tremor Detection (3-4 Hz)
+  - Dyskinesia Detection (4-6 Hz)
+  - Freezing of Gait (FOG) Detection (5-8 Hz)
+  - BLE Communication with 3 separate characteristics
 
-  Uses LSM6DSL Accelerometer and Gyroscope
-  FFT for motion analysis
-  STM32duinoBLE for BLE communication
-  Shake the board to simulate motion data for testing.
-
-  LIGHT INDICATORS:
-  LD1: Green (Tremor)
-  LD2: Green (Dyskinesia)
-  LD3: Red (FOG)
-  LD4: Blue (BLE Status always on)
-  LD5: Green (Power always on)
-  LD6: Yellow (ST-Link always on)
+  Uses LSM6DSL sensor with Arduino framework
+  tremor service integrated
 */
 
 #include <Arduino.h>
 #include <Wire.h>
-#include "LSM6DSLSensor.h"
-#include "arduinoFFT.h"
+#include <LSM6DSLSensor.h>
+#include <arduinoFFT.h>
 #include <STM32duinoBLE.h>
 
 // ==========================================
-// 1. Hardware pin definition
+// HARDWARE PINS
 // ==========================================
 #define PIN_LED_TREMOR    PA5   // LD1 (Green)
 #define PIN_LED_DYSK      PB14  // LD2 (Green)
-#define PIN_LED_FOG       PC9   // LD3 (Yellow)
-#define PIN_LED_BLE       PE1   // LD4 (Blue)
+#define PIN_LED_FOG       PC9   // LD3 (Red/Yellow)
+#define PIN_LED_BLE       PB7   // LD4 (Blue)
 
 #define LED_ON  HIGH
 #define LED_OFF LOW
 
 // ==========================================
-// 2. Parameter configuration
+// DETECTION PARAMETERS
 // ==========================================
-#define SAMPLES 128             
-#define SAMPLING_FREQUENCY 52.0 
+#define SAMPLES 256             // FFT size (power of 2)
+#define SAMPLING_FREQUENCY 52.0 // Hz
 
-// Threshold 
-#define THRESHOLD_MAG         2500.0  
-#define THRESHOLD_WALKING     800.0   
-#define THRESHOLD_FREEZE      400.0   
+// Frequency ranges (NON-OVERLAPPING)
+#define TREMOR_LOW_HZ   3.0
+#define TREMOR_HIGH_HZ  4.0
+#define DYSK_LOW_HZ     4.0
+#define DYSK_HIGH_HZ    6.0
+#define FOG_LOW_HZ      5.0
+#define FOG_HIGH_HZ     8.0
 
-
-
-
-
-// Time parameter (ms)
-#define WALK_CONFIRM_TIME     5000 
-#define STEP_TIMEOUT          4000 
-#define FOG_TRIGGER_DELAY     1000  
+// Detection thresholds
+#define THRESHOLD_ENERGY      0.8    // Minimum energy to detect anything
+#define THRESHOLD_REST        0.6    // Below this = at rest
+#define TREMOR_POWER_RATIO    0.20   // 20% of total power
+#define DYSK_POWER_RATIO      0.20   // 20% of total power
 
 // ==========================================
-// 3. Global variables
+// GLOBAL VARIABLES
 // ==========================================
 TwoWire my_i2c(PB11, PB10); 
 LSM6DSLSensor *AccGyr;
 arduinoFFT FFT = arduinoFFT();
 
+// FFT buffers
 double vReal[SAMPLES];
 double vImag[SAMPLES];
 int sampleIndex = 0;
 unsigned long lastSampleTime = 0;
-const unsigned long samplingPeriod = 1000 / SAMPLING_FREQUENCY; 
+const unsigned long samplingPeriod = 1000000 / (unsigned long)SAMPLING_FREQUENCY; // microseconds
 
-// state management
-enum DetectionState { STATE_IDLE, STATE_TREMOR, STATE_DYSKINESIA };
-DetectionState currentMotionState = STATE_IDLE;
+// Detection state
+bool is_tremor = false;
+bool is_dyskinesia = false;
+bool is_fog = false;
+bool is_resting = true;
 
-// FOG variable
-bool isWalkingConfirmed = false;    
-bool isFogActive = false;           
-unsigned long lastHighEnergyTime = 0; 
-unsigned long walkSessionStartTime = 0; 
+float dominant_freq = 0;
+float tremor_power = 0;
+float dysk_power = 0;
+float fog_power = 0;
+float total_energy = 0;
 
-// Timer
-unsigned long debugTimer = 0;
+// FOG specific variables
+float fog_index = 0;
+float instant_energy_sum = 0;
+int samples_since_last_analysis = 0;
 
-// BLE
-BLEService parkinsonService("19B10000-E8F2-537E-4F6C-D104768A1214");
-BLEStringCharacteristic tremorChar("19B10001-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify, 20);
-BLEStringCharacteristic dyskinesiaChar("19B10002-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify, 20);
-BLEStringCharacteristic fogChar("19B10003-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify, 20);
-
-void checkFOG_V3(double mag);
-void performFFTAnalysis();
-void updateMotionLEDs(DetectionState state);
+// BLE Setup (3 characteristics as required)
+BLEService parkinsonService("A0E1B2C3-D4E5-F6A7-B8C9-D0E1F2A3B4C5");
+BLEStringCharacteristic tremorChar("A1E2B3C4-D5E6-F7A8-B9C0-D1E2F3A4B5C6", BLERead | BLENotify, 20);
+BLEStringCharacteristic dyskinesiaChar("A1E2B3C4-D5E6-F7A8-B9C0-D1E2F3A4B5C7", BLERead | BLENotify, 20);
+BLEStringCharacteristic fogChar("A1E2B3C4-D5E6-F7A8-B9C0-D1E2F3A4B5C8", BLERead | BLENotify, 20);
 
 // ==========================================
-// 4. Setup
+// FUNCTION PROTOTYPES
+// ==========================================
+void performFFTAnalysis();
+void updateBLECharacteristics();
+void updateLEDs();
+
+// ==========================================
+// SETUP
 // ==========================================
 void setup() {
   Serial.begin(115200);
   delay(2000); 
-  Serial.println("\n=== Parkinson's Disease Monitor  ===");
+  Serial.println("\n========================================");
+  Serial.println("  Parkinson's Disease Monitor");
+  Serial.println("========================================");
 
+  // Initialize LEDs
   pinMode(PIN_LED_TREMOR, OUTPUT);
   pinMode(PIN_LED_DYSK, OUTPUT);
   pinMode(PIN_LED_FOG, OUTPUT);
@@ -108,22 +109,32 @@ void setup() {
   digitalWrite(PIN_LED_TREMOR, LED_OFF);
   digitalWrite(PIN_LED_DYSK, LED_OFF);
   digitalWrite(PIN_LED_FOG, LED_OFF);
-  digitalWrite(PIN_LED_BLE, LED_ON); 
+  digitalWrite(PIN_LED_BLE, LED_OFF);
   
+  // Initialize I2C and sensor
   my_i2c.begin();
   AccGyr = new LSM6DSLSensor(&my_i2c, LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW);
   
   if(AccGyr->begin() != LSM6DSL_STATUS_OK) {
-    Serial.println("Sensor Error!");
-    while(1) { digitalWrite(PIN_LED_BLE, !digitalRead(PIN_LED_BLE)); delay(100); }
+    Serial.println("ERROR: Sensor initialization failed!");
+    while(1) { 
+      digitalWrite(PIN_LED_BLE, !digitalRead(PIN_LED_BLE)); 
+      delay(100); 
+    }
   }
 
   AccGyr->Enable_X();
-  AccGyr->Set_X_FS(2);     
-  AccGyr->Set_X_ODR(52.0f); 
+  AccGyr->Set_X_FS(2);      // ±2g range
+  AccGyr->Set_X_ODR(52.0f); // 52 Hz sampling
+  Serial.println("Sensor: OK");
   
-  if (!BLE.begin()) { Serial.println("BLE Failed!"); while (1); }
-  BLE.setLocalName("Group28_Monitor");
+  // Initialize BLE
+  if (!BLE.begin()) { 
+    Serial.println("ERROR: BLE initialization failed!"); 
+    while (1); 
+  }
+  
+  BLE.setLocalName("PD-Monitor-G28");
   BLE.setAdvertisedService(parkinsonService);
   
   parkinsonService.addCharacteristic(tremorChar);
@@ -131,187 +142,252 @@ void setup() {
   parkinsonService.addCharacteristic(fogChar);
   BLE.addService(parkinsonService);
   
-  tremorChar.writeValue("Normal");
-  dyskinesiaChar.writeValue("Normal");
-  fogChar.writeValue("Normal");
+  tremorChar.writeValue("TRM:0,0.00,0.000");
+  dyskinesiaChar.writeValue("DSK:0,0.00,0.000");
+  fogChar.writeValue("FOG:0,0.00,0.00");
   
   BLE.advertise();
+  digitalWrite(PIN_LED_BLE, LED_ON);
   
-  Serial.println("System Ready.");
+  Serial.println("BLE: OK");
+  Serial.println("Service UUID: A0E1B2C3-D4E5-F6A7-B8C9-D0E1F2A3B4C5");
+  Serial.println("Tremor:  A1E2B3C4-D5E6-F7A8-B9C0-D1E2F3A4B5C6");
+  Serial.println("Dysk:    A1E2B3C4-D5E6-F7A8-B9C0-D1E2F3A4B5C7");
+  Serial.println("FOG:     A1E2B3C4-D5E6-F7A8-B9C0-D1E2F3A4B5C8");
+  Serial.println("========================================\n");
+  Serial.println("System Ready. Waiting for data...\n");
 }
 
 // ==========================================
-// 5. Loop
+// MAIN LOOP
 // ==========================================
 void loop() {
+  // Handle BLE connections
   BLE.poll();
-  digitalWrite(PIN_LED_BLE, LED_ON);
+  
+  unsigned long currentMicros = micros();
+  
+  // Sample at 52 Hz
+  if (currentMicros - lastSampleTime >= samplingPeriod) {
+    lastSampleTime = currentMicros;
 
-  if (millis() - lastSampleTime >= samplingPeriod) {
-    lastSampleTime = millis();
-
+    // Read accelerometer
     int32_t accelerometer[3];
     AccGyr->Get_X_Axes(accelerometer);
     
     double x = (double)accelerometer[0];
     double y = (double)accelerometer[1];
     double z = (double)accelerometer[2];
-    double magnitude = sqrt(x*x + y*y + z*z);
-    double cleanMag = abs(magnitude - 1000.0);
     
-    // FOG 
-    checkFOG_V3(cleanMag); 
+    // Calculate magnitude
+    double magnitude = sqrt(x*x + y*y + z*z);
+    
+    // Track energy for rest detection
+    instant_energy_sum += abs(magnitude - 1000.0);
+    samples_since_last_analysis++;
 
-    // FFT
+    // Fill FFT buffer
     if (sampleIndex < SAMPLES) {
-      vReal[sampleIndex] = magnitude; 
+      vReal[sampleIndex] = magnitude;
       vImag[sampleIndex] = 0;
       sampleIndex++;
     }
     else {
+      // Buffer full - perform analysis
       performFFTAnalysis();
-      sampleIndex = 0; 
+      
+      // Update BLE and LEDs
+      updateBLECharacteristics();
+      updateLEDs();
+      
+      // Reset for next window
+      sampleIndex = 0;
+      instant_energy_sum = 0;
+      samples_since_last_analysis = 0;
     }
   }
 }
 
 // ==========================================
-// 6. FFT Analysis
+// FFT ANALYSIS (Your tremor_service logic)
 // ==========================================
 void performFFTAnalysis() {
+  
+  // Quick rest check
+  if (instant_energy_sum < THRESHOLD_REST * samples_since_last_analysis) {
+    is_resting = true;
+    is_tremor = false;
+    is_dyskinesia = false;
+    is_fog = false;
+    tremor_power = 0;
+    dysk_power = 0;
+    fog_power = 0;
+    dominant_freq = 0;
+    total_energy = 0;
+    fog_index = 0;
+    return;
+  }
+  
+  // Remove DC component
   double mean = 0;
   for (int i = 0; i < SAMPLES; i++) { mean += vReal[i]; }
   mean /= SAMPLES;
   for (int i = 0; i < SAMPLES; i++) { vReal[i] -= mean; }
 
+  // Apply windowing
   FFT.Windowing(vReal, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+  
+  // Perform FFT
   FFT.Compute(vReal, vImag, SAMPLES, FFT_FORWARD);
   FFT.ComplexToMagnitude(vReal, vImag, SAMPLES);
 
-  double peakEnergy = 0;
-  double peakFreq = 0;
+  // Calculate band powers
+  tremor_power = 0;
+  dysk_power = 0;
+  fog_power = 0;
+  total_energy = 0;
   
-  for (int i = 8; i < (SAMPLES / 2); i++) {
-    if (vReal[i] > peakEnergy) {
-      peakEnergy = vReal[i];
-      peakFreq = (i * 1.0 * SAMPLING_FREQUENCY) / SAMPLES;
+  float loco_power = 0; // For FOG index calculation
+  
+  int peak_bin = 1;
+  double peak_magnitude = vReal[1];
+  
+  for (int i = 1; i < (SAMPLES / 2); i++) {
+    float freq = (i * SAMPLING_FREQUENCY) / SAMPLES;
+    double power = vReal[i] * vReal[i]; // Power = magnitude^2
+    
+    // Tremor band (3-4 Hz)
+    if (freq >= TREMOR_LOW_HZ && freq < TREMOR_HIGH_HZ) {
+      tremor_power += power;
+    }
+    
+    // Dyskinesia band (4-6 Hz)
+    if (freq >= DYSK_LOW_HZ && freq < DYSK_HIGH_HZ) {
+      dysk_power += power;
+    }
+    
+    // FOG band (5-8 Hz)
+    if (freq >= FOG_LOW_HZ && freq <= FOG_HIGH_HZ) {
+      fog_power += power;
+    }
+    
+    // Locomotion band (0.5-5 Hz) for FOG index
+    if (freq >= 0.5 && freq <= 5.0) {
+      loco_power += power;
+    }
+    
+    // Total energy (0.5-15 Hz)
+    if (freq >= 0.5 && freq <= 15.0) {
+      total_energy += power;
+    }
+    
+    // Track peak for dominant frequency
+    if (vReal[i] > peak_magnitude) {
+      peak_magnitude = vReal[i];
+      peak_bin = i;
     }
   }
-
-  DetectionState newState = STATE_IDLE;
-  if (peakEnergy > THRESHOLD_MAG) {
-    if (peakFreq >= 3.0 && peakFreq < 5.0) {
-       newState = STATE_TREMOR;
-    } 
-    else if (peakFreq >= 5.0 && peakFreq <= 7.0) { 
-       newState = STATE_DYSKINESIA;
-    }
+  
+  dominant_freq = (peak_bin * SAMPLING_FREQUENCY) / SAMPLES;
+  
+  // Calculate FOG index (freeze/locomotion ratio)
+  if (loco_power < 0.5) loco_power = 0.5; // Prevent division by zero
+  fog_index = fog_power / loco_power;
+  
+  // Check if enough energy to analyze
+  if (total_energy < THRESHOLD_ENERGY) {
+    is_resting = true;
+    is_tremor = false;
+    is_dyskinesia = false;
+    is_fog = false;
+    return;
   }
-
-  if (newState != currentMotionState) {
-    currentMotionState = newState;
-    updateMotionLEDs(currentMotionState);
+  
+  is_resting = false;
+  
+  // Calculate power ratios
+  float tremor_ratio = tremor_power / total_energy;
+  float dysk_ratio = dysk_power / total_energy;
+  
+  // Detection logic with priority: FOG > Dyskinesia > Tremor
+  
+  // Priority 1: FOG (5-8 Hz, high freeze index)
+  if (fog_index > 2.0 && dominant_freq >= FOG_LOW_HZ && dominant_freq <= FOG_HIGH_HZ) {
+    is_fog = true;
+    is_tremor = false;
+    is_dyskinesia = false;
   }
-}
-
-void updateMotionLEDs(DetectionState state) {
-  digitalWrite(PIN_LED_TREMOR, LED_OFF);
-  digitalWrite(PIN_LED_DYSK, LED_OFF);
-  if (isFogActive) {
-      tremorChar.writeValue("Normal");
-      dyskinesiaChar.writeValue("Normal");
-      return; 
+  // Priority 2: Dyskinesia (4-6 Hz)
+  else if (dysk_ratio > DYSK_POWER_RATIO && 
+           dominant_freq >= DYSK_LOW_HZ && dominant_freq < DYSK_HIGH_HZ &&
+           dysk_power > tremor_power) {
+    is_dyskinesia = true;
+    is_tremor = false;
+    is_fog = false;
   }
-
-  switch (state) {
-    case STATE_TREMOR:
-      Serial.println(">> DETECTED: TREMOR"); 
-      digitalWrite(PIN_LED_TREMOR, LED_ON);
-      tremorChar.writeValue("Tremor Detected"); 
-      dyskinesiaChar.writeValue("Normal");
-      break;
-      
-    case STATE_DYSKINESIA:
-      Serial.println(">> DETECTED: DYSKINESIA"); 
-      digitalWrite(PIN_LED_DYSK, LED_ON);
-      tremorChar.writeValue("Normal");
-      dyskinesiaChar.writeValue("Dyskinesia!"); 
-      break;
-      
-    case STATE_IDLE:
-      tremorChar.writeValue("Normal");
-      dyskinesiaChar.writeValue("Normal");
-      break;
+  // Priority 3: Tremor (3-4 Hz)
+  else if (tremor_ratio > TREMOR_POWER_RATIO && 
+           dominant_freq >= TREMOR_LOW_HZ && dominant_freq < TREMOR_HIGH_HZ) {
+    is_tremor = true;
+    is_dyskinesia = false;
+    is_fog = false;
+  }
+  else {
+    is_tremor = false;
+    is_dyskinesia = false;
+    is_fog = false;
   }
 }
 
 // ==========================================
-// 7. FOG Logic
+// UPDATE BLE CHARACTERISTICS
 // ==========================================
-void checkFOG_V3(double mag) {
+void updateBLECharacteristics() {
+  char buffer[20];
   
-  unsigned long now = millis();
-
-  // 1. Detect large movements
-  if (mag > THRESHOLD_WALKING) {
-    lastHighEnergyTime = now; 
-    
-    if (walkSessionStartTime == 0) {
-      walkSessionStartTime = now;
-    }
-    
-    // While walking -> Turn off FOG
-    if (isFogActive) {
-      isFogActive = false;
-      digitalWrite(PIN_LED_FOG, LED_OFF);
-      
-      fogChar.writeValue("Walking..."); 
-      Serial.println(">>> FOG Cleared");
-    }
+  // Update Tremor characteristic
+  if (is_tremor) {
+    snprintf(buffer, 20, "TRM:1,%.2f,%.3f", dominant_freq, tremor_power);
+    Serial.println(">>> TREMOR DETECTED!");
+  } else {
+    snprintf(buffer, 20, "TRM:0,%.2f,%.3f", dominant_freq, tremor_power);
   }
-
-  // 2. logic
-  if (walkSessionStartTime > 0) {
-    
-    unsigned long walkDuration = now - walkSessionStartTime;
-    unsigned long timeSinceLastMove = now - lastHighEnergyTime;
-
-    // A. Confirm walking
-    if (!isWalkingConfirmed && walkDuration > WALK_CONFIRM_TIME) {
-      isWalkingConfirmed = true;
-      Serial.println(">>> Walking Confirmed!");
-      fogChar.writeValue("Walking Mode"); 
-    }
-
-    // B. Trigger FOG
-    if (isWalkingConfirmed) {
-      if (timeSinceLastMove > FOG_TRIGGER_DELAY && mag < THRESHOLD_FREEZE) {
-        if (!isFogActive) {
-          isFogActive = true;
-          digitalWrite(PIN_LED_FOG, LED_ON);
-          
-          fogChar.writeValue("FOG ACTIVE!"); 
-          Serial.println("!!! FOG DETECTED !!!");
-        }
-      }
-    }
-
-    // C. End the Session
-    if (timeSinceLastMove > STEP_TIMEOUT) {
-      if (walkSessionStartTime != 0) {
-        walkSessionStartTime = 0; 
-        isWalkingConfirmed = false;
-        
-        if (isFogActive) {
-          isFogActive = false;
-          digitalWrite(PIN_LED_FOG, LED_OFF);
-          
-          fogChar.writeValue("Normal"); 
-          Serial.println("... Normal Stop ...");
-        } else {
-             fogChar.writeValue("Normal"); 
-        }
-      }
-    }
+  tremorChar.writeValue(buffer);
+  
+  // Update Dyskinesia characteristic
+  if (is_dyskinesia) {
+    snprintf(buffer, 20, "DSK:1,%.2f,%.3f", dominant_freq, dysk_power);
+    Serial.println(">>> DYSKINESIA DETECTED!");
+  } else {
+    snprintf(buffer, 20, "DSK:0,%.2f,%.3f", dominant_freq, dysk_power);
   }
+  dyskinesiaChar.writeValue(buffer);
+  
+  // Update FOG characteristic
+  if (is_fog) {
+    snprintf(buffer, 20, "FOG:1,%.2f,%.2f", fog_index, dominant_freq);
+    Serial.println(">>> FOG DETECTED!");
+  } else {
+    snprintf(buffer, 20, "FOG:0,%.2f,%.2f", fog_index, dominant_freq);
+  }
+  fogChar.writeValue(buffer);
+  
+  // Debug output
+  if (!is_resting) {
+    Serial.print("Freq: ");
+    Serial.print(dominant_freq, 2);
+    Serial.print(" Hz | FOG Index: ");
+    Serial.println(fog_index, 2);
+  } else {
+    Serial.println("At rest");
+  }
+}
+
+// ==========================================
+// UPDATE LED INDICATORS
+// ==========================================
+void updateLEDs() {
+  digitalWrite(PIN_LED_TREMOR, is_tremor ? LED_ON : LED_OFF);
+  digitalWrite(PIN_LED_DYSK, is_dyskinesia ? LED_ON : LED_OFF);
+  digitalWrite(PIN_LED_FOG, is_fog ? LED_ON : LED_OFF);
 }
